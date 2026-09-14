@@ -147,20 +147,148 @@ final class GlassBLEController: NSObject, ObservableObject {
         send(command: .glassWifiDirectAddress, payload: [])
     }
 
-    /// Gözlüğü kendi açık Wi-Fi ağını yayınlamaya zorlar (AIBUDS'ın yaptığı gibi)
     func enableWifiHotspot(ssid: String = "AiGlassDb_\(Int.random(in: 0..<10000))", channel: UInt8 = 0) {
         var payload: [UInt8] = []
         let ssidBytes = Array(ssid.utf8)
-        let passwordBytes: [UInt8] = [] // AIBUDS de boş şifre kullanıyor
+        let passwordBytes: [UInt8] = []
 
-        payload.append(0x01); payload.append(0x01); payload.append(1) // tag=mode, len=1, value=AP
-        payload.append(0x02); payload.append(UInt8(ssidBytes.count)); payload.append(contentsOf: ssidBytes)
-        payload.append(0x03); payload.append(UInt8(passwordBytes.count)); payload.append(contentsOf: passwordBytes)
-        payload.append(0x04); payload.append(0x01); payload.append(channel)
+        payload.append(0x01)
+        payload.append(0x01)
+        payload.append(1)
+        payload.append(0x02)
+        payload.append(UInt8(ssidBytes.count))
+        payload.append(contentsOf: ssidBytes)
+        payload.append(0x03)
+        payload.append(UInt8(passwordBytes.count))
+        payload.append(contentsOf: passwordBytes)
+        payload.append(0x04)
+        payload.append(0x01)
+        payload.append(channel)
 
         send(command: .glassSetWifiConfig, payload: payload)
     }
 
     private func send(command: GlassProtocol.Command, payload: [UInt8]) {
-        guard let peripheral = glassPeripheral,
-              let
+        guard let peripheral = glassPeripheral, let writeChar = writeCharacteristic, peripheral.state == .connected else {
+            log("Henüz bağlı değil, komut kuyruğa alındı: \(command)")
+            pendingCommand = (command, payload)
+            return
+        }
+
+        let packets = packetBuilder.buildPackets(command: command, payload: payload)
+        for packet in packets {
+            let data = Data(packet)
+            log("Gönderiliyor -> \(data.map { String(format: "%02X", $0) }.joined(separator: " "))")
+            let writeType: CBCharacteristicWriteType = writeChar.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
+            peripheral.writeValue(data, for: writeChar, type: writeType)
+        }
+    }
+}
+
+// MARK: - CBCentralManagerDelegate
+
+extension GlassBLEController: CBCentralManagerDelegate {
+    func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        switch central.state {
+        case .poweredOn:
+            log("Bluetooth hazır, tarama başlatılıyor.")
+            startScanning()
+        case .poweredOff:
+            log("Bluetooth kapalı. Lütfen açın.")
+        case .unauthorized:
+            log("Bluetooth izni verilmemiş.")
+        default:
+            log("Bluetooth state: \(central.state.rawValue)")
+        }
+    }
+
+    func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
+        log("Cihaz bulundu: \(peripheral.name ?? "isimsiz") RSSI=\(RSSI)")
+        centralManager.stopScan()
+        glassPeripheral = peripheral
+        peripheral.delegate = self
+        centralManager.connect(peripheral, options: nil)
+    }
+
+    func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        log("Bağlandı: \(peripheral.name ?? "isimsiz"). Servisler keşfediliyor...")
+        isConnected = true
+        peripheral.discoverServices([GlassProtocol.serviceUUID])
+    }
+
+    func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        log("Bağlantı başarısız: \(error?.localizedDescription ?? "bilinmeyen hata")")
+    }
+
+    func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        log("Bağlantı koptu: \(error?.localizedDescription ?? "normal kapama")")
+        isConnected = false
+        glassPeripheral = nil
+        writeCharacteristic = nil
+        notifyCharacteristic = nil
+        packetBuilder.reset()
+    }
+}
+
+// MARK: - CBPeripheralDelegate
+
+extension GlassBLEController: CBPeripheralDelegate {
+    func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        guard let services = peripheral.services else { return }
+        for service in services where service.uuid == GlassProtocol.serviceUUID {
+            log("Servis bulundu, karakteristikler keşfediliyor...")
+            peripheral.discoverCharacteristics(
+                [GlassProtocol.writeCharacteristicUUID, GlassProtocol.notifyCharacteristicUUID],
+                for: service
+            )
+        }
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+        guard let characteristics = service.characteristics else { return }
+        for characteristic in characteristics {
+            if characteristic.uuid == GlassProtocol.writeCharacteristicUUID {
+                writeCharacteristic = characteristic
+                log("Write karakteristiği bulundu.")
+            } else if characteristic.uuid == GlassProtocol.notifyCharacteristicUUID {
+                notifyCharacteristic = characteristic
+                peripheral.setNotifyValue(true, for: characteristic)
+                log("Notify karakteristiği bulundu, dinleme açıldı.")
+            }
+        }
+
+        if writeCharacteristic != nil, notifyCharacteristic != nil, let pending = pendingCommand {
+            pendingCommand = nil
+            send(command: pending.0, payload: pending.1)
+        }
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+        guard characteristic.uuid == GlassProtocol.notifyCharacteristicUUID, let data = characteristic.value else { return }
+        let hex = data.map { String(format: "%02X", $0) }.joined(separator: " ")
+        log("Bildirim alındı <- \(hex)")
+
+        if data.count >= 5 {
+            let bytes = [UInt8](data)
+            let seq = bytes[0]
+            let command = Int8(bitPattern: bytes[1])
+            let commandType = bytes[2]
+            let fragInfo = bytes[3]
+            let length = bytes[4]
+            log("  seq=\(seq) command=\(command) type=\(commandType) fragInfo=\(fragInfo) len=\(length)")
+
+            if data.count > 5 {
+                let payloadBytes = Array(bytes[5...])
+                if let text = String(bytes: payloadBytes, encoding: .utf8), text.allSatisfy({ $0.isASCII && !$0.isNewline }) {
+                    log("  payload (metin): \(text)")
+                }
+            }
+        }
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
+        if let error = error {
+            log("Yazma hatası: \(error.localizedDescription)")
+        }
+    }
+}
