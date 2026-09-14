@@ -1,0 +1,19 @@
+name: GlassApp
+options:
+  bundleIdPrefix: com.example
+targets:
+  GlassApp:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources: [Sources/GlassApp]
+    info:
+      path: Generated-Info.plist
+      properties:
+        NSBluetoothAlwaysUsageDescription: "Gözlükle Bluetooth üzerinden konuşmak için"
+        UILaunchScreen: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.glassapp
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_VERSION: "5.0"
