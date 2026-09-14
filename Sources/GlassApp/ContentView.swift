@@ -1,28 +1,52 @@
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var controllerHolder = ControllerHolder()
+    @StateObject private var controller = GlassBLEController()
 
     var body: some View {
-        VStack(spacing: 20) {
-            Text("Gözlük Kontrol")
-                .font(.title)
-            Button("Bağlan") {
-                controllerHolder.controller.startScanning()
+        VStack(spacing: 12) {
+            Text(controller.isConnected ? "Bağlı ✅" : "Bağlı değil ❌")
+                .font(.headline)
+
+            HStack {
+                Button("Bağlan") {
+                    controller.startScanning()
+                }
+                Button("Foto Çek") {
+                    controller.takePhoto()
+                }
+                Button("Video Başlat") {
+                    controller.startVideoRecording()
+                }
+                Button("Medya Sayısı") {
+                    controller.queryMediaCount()
+                }
             }
-            Button("Fotoğraf Çek") {
-                controllerHolder.controller.takePhoto()
+            .buttonStyle(.bordered)
+
+            Divider()
+
+            ScrollView {
+                ScrollViewReader { proxy in
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(Array(controller.logLines.enumerated()), id: \.offset) { index, line in
+                            Text(line)
+                                .font(.system(size: 11, design: .monospaced))
+                                .id(index)
+                        }
+                    }
+                    .onChange(of: controller.logLines.count) { _ in
+                        if let last = controller.logLines.indices.last {
+                            proxy.scrollTo(last, anchor: .bottom)
+                        }
+                    }
+                }
             }
-            Button("Video Kaydı Başlat") {
-                controllerHolder.controller.startVideoRecording()
-            }
+            .frame(maxHeight: .infinity)
+            .padding(.horizontal, 4)
         }
         .padding()
     }
-}
-
-final class ControllerHolder: ObservableObject {
-    let controller = GlassBLEController()
 }
 
 #Preview {
