@@ -17,11 +17,27 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Build for Simulator (imzalama yok, sadece derleme testi)
+      - name: Build unsigned app for real device
         run: |
           xcodebuild build \
             -project GlassApp.xcodeproj \
             -scheme GlassApp \
-            -sdk iphonesimulator \
-            -destination 'generic/platform=iOS Simulator' \
-            CODE_SIGNING_ALLOWED=NO
+            -sdk iphoneos \
+            -configuration Debug \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            -destination 'generic/platform=iOS'
+
+      - name: Package as unsigned IPA
+        run: |
+          mkdir Payload
+          cp -r build/Build/Products/Debug-iphoneos/GlassApp.app Payload/
+          zip -r GlassApp.ipa Payload
+
+      - name: Upload IPA as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GlassApp-unsigned
+          path: GlassApp.ipa
