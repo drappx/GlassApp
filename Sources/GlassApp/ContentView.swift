@@ -4,25 +4,24 @@ struct ContentView: View {
     @StateObject private var controller = GlassBLEController()
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
             Text(controller.isConnected ? "Bağlı ✅" : "Bağlı değil ❌")
                 .font(.headline)
 
-            HStack {
-                Button("Bağlan") {
-                    controller.startScanning()
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack {
+                    Button("Bağlan") { controller.startScanning() }
+                    Button("Foto Çek") { controller.takePhoto() }
+                    Button("Video Başlat") { controller.startVideoRecording() }
+                    Button("Ses Başlat") { controller.startAudioRecording() }
+                    Button("Medya Sayısı") { controller.queryMediaCount() }
+                    Button("Dosya Yön. Başlat") { controller.startFileManager() }
+                    Button("Kamerayı Kapat") { controller.turnOffCameraSubsystem() }
+                    Button("Wi-Fi Adresi Sorgula") { controller.queryWifiDirectAddress() }
+                    Button("Wi-Fi Ağı Aç") { controller.enableWifiHotspot() }
                 }
-                Button("Foto Çek") {
-                    controller.takePhoto()
-                }
-                Button("Video Başlat") {
-                    controller.startVideoRecording()
-                }
-                Button("Medya Sayısı") {
-                    controller.queryMediaCount()
-                }
+                .buttonStyle(.bordered)
             }
-            .buttonStyle(.bordered)
 
             Divider()
 
