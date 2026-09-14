@@ -1,49 +1,30 @@
-//
-//  GlassBLEController.swift
-//  Marbar / ABMate gözlük için minimal, bağımsız BLE prototipi
-//
-//  Bu dosya AIBUDS uygulamasından bağımsız, doğrudan CoreBluetooth
-//  kullanarak gözlükle konuşur. Amaç: bağlan, GLASS_TAKE_PHOTO komutunu
-//  gönder, cihazın notify karakteristiğinden gelen ham byte'ları logla.
-//
-//  Kullanım: Bu dosyayı yeni bir Xcode projesine (iOS App, SwiftUI ya da
-//  UIKit fark etmez) ekle. Info.plist'e şu iznini eklemeyi unutma:
-//    NSBluetoothAlwaysUsageDescription
-//  Sonra bir View/ViewController içinden:
-//    let controller = GlassBLEController()
-//    controller.startScanning()
-//  ile başlat. Konsolu (Xcode'un alt panelindeki "debug area") izle.
-//
-
 import Foundation
 import CoreBluetooth
+import Combine
 
-// MARK: - Protokol sabitleri (reverse engineering ile bulundu)
+// MARK: - Protokol sabitleri
 
 enum GlassProtocol {
-    // ABMate ana servis ve karakteristikleri
     static let serviceUUID = CBUUID(string: "0000fdb3-0000-1000-8000-00805f9b34fb")
     static let writeCharacteristicUUID = CBUUID(string: "0000ff17-0000-1000-8000-00805f9b34fb")
     static let notifyCharacteristicUUID = CBUUID(string: "0000ff18-0000-1000-8000-00805f9b34fb")
 
-    // Command.java'dan önemli komut kodları (imzalı Int8 olarak)
     enum Command: Int8 {
-        case glassTakePhoto = -13              // GLASS_TAKE_PHOTO — gerçek fotoğraf komutu
-        case glassCameraTurnOffSubsystem = -30 // GLASS_CAMERA_TURN_OFF_SUBSYSTEM
-        case glassStartRecordingVideo = -28    // GLASS_START_RECORDING_VIDEO
-        case glassStartRecordingAudio = -27    // GLASS_START_RECORDING_AUDIO
-        case glassAiPicPush = -29              // GLASS_AI_PIC_PUSH (cihazdan otomatik gelir)
-        case glassWifiDirectAddress = -14      // GLASS_WIFI_DIRECT_ADDRESS
-        case commandDeviceInfo = 39            // COMMAND_DEVICE_INFO
+        case glassTakePhoto = -13
+        case glassCameraTurnOffSubsystem = -30
+        case glassStartRecordingVideo = -28
+        case glassStartRecordingAudio = -27
+        case glassAiPicPush = -29
+        case glassWifiDirectAddress = -14
+        case glassMediaFileCount = -17
+        case commandDeviceInfo = 39
     }
 
     static let commandTypeRequest: UInt8 = 0x01
-
-    // Varsayılan parça (fragment) payload boyutu — RequestSplitter(15)
     static let defaultMaxPayloadSize = 15
 }
 
-// MARK: - Paket oluşturucu (RequestHandler.java'nın Swift karşılığı)
+// MARK: - Paket oluşturucu
 
 final class GlassPacketBuilder {
     private var hostSeqNum: UInt8 = 0
@@ -57,9 +38,6 @@ final class GlassPacketBuilder {
         hostSeqNum = 0
     }
 
-    /// Bir komutu (payload'sız ya da payload'lı) gerçek BLE paketlerine
-    /// (5-byte header + chunk) böler. Java tarafındaki RequestHandler.handleRequest
-    /// ile birebir aynı mantık.
     func buildPackets(command: GlassProtocol.Command, payload: [UInt8] = []) -> [[UInt8]] {
         var packets: [[UInt8]] = []
 
@@ -68,8 +46,8 @@ final class GlassPacketBuilder {
             packet.append(hostSeqNum)
             packet.append(UInt8(bitPattern: command.rawValue))
             packet.append(GlassProtocol.commandTypeRequest)
-            packet.append(0x00) // fragInfo
-            packet.append(0x00) // payloadLength
+            packet.append(0x00)
+            packet.append(0x00)
             packets.append(packet)
             hostSeqNum = (hostSeqNum &+ 1) & 0x0F
         } else {
@@ -78,7 +56,6 @@ final class GlassPacketBuilder {
                 let start = fragIndex * maxPayloadSize
                 let end = min(start + maxPayloadSize, payload.count)
                 let chunk = Array(payload[start..<end])
-
                 let fragInfo = UInt8((((fragNum - 1) << 4) & 0xF0) | (fragIndex & 0x0F))
 
                 var packet: [UInt8] = []
@@ -98,17 +75,18 @@ final class GlassPacketBuilder {
     }
 }
 
-// MARK: - Ana BLE kontrolcüsü
+// MARK: - Ana BLE kontrolcüsü (artık ObservableObject — SwiftUI ekranında canlı log gösterebiliyoruz)
 
-final class GlassBLEController: NSObject {
+final class GlassBLEController: NSObject, ObservableObject {
+    @Published var logLines: [String] = []
+    @Published var isConnected: Bool = false
+
     private var centralManager: CBCentralManager!
     private var glassPeripheral: CBPeripheral?
     private var writeCharacteristic: CBCharacteristic?
     private var notifyCharacteristic: CBCharacteristic?
 
     private let packetBuilder = GlassPacketBuilder()
-
-    // Bekleyen komut kuyruğu (bağlantı/keşif bitmeden komut gelirse burada bekler)
     private var pendingCommand: (GlassProtocol.Command, [UInt8])?
 
     override init() {
@@ -116,16 +94,28 @@ final class GlassBLEController: NSObject {
         centralManager = CBCentralManager(delegate: self, queue: nil)
     }
 
+    private func log(_ message: String) {
+        let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+        let line = "[\(timestamp)] \(message)"
+        print(line)
+        DispatchQueue.main.async {
+            self.logLines.append(line)
+            // Çok uzamasın diye son 200 satırı tutalım
+            if self.logLines.count > 200 {
+                self.logLines.removeFirst(self.logLines.count - 200)
+            }
+        }
+    }
+
     func startScanning() {
         guard centralManager.state == .poweredOn else {
-            print("[GlassBLE] Bluetooth henüz hazır değil, state=\(centralManager.state.rawValue)")
+            log("Bluetooth henüz hazır değil, state=\(centralManager.state.rawValue)")
             return
         }
-        print("[GlassBLE] Taramaya başlanıyor (servis: \(GlassProtocol.serviceUUID))...")
+        log("Taramaya başlanıyor...")
         centralManager.scanForPeripherals(withServices: [GlassProtocol.serviceUUID], options: nil)
     }
 
-    /// Fotoğraf çekme komutu gönder. Henüz bağlı değilsek, bağlanınca otomatik gönderilir.
     func takePhoto(mode: UInt8 = 0) {
         send(command: .glassTakePhoto, payload: [mode])
     }
@@ -138,11 +128,15 @@ final class GlassBLEController: NSObject {
         send(command: .glassStartRecordingAudio, payload: [])
     }
 
+    func queryMediaCount() {
+        send(command: .glassMediaFileCount, payload: [])
+    }
+
     private func send(command: GlassProtocol.Command, payload: [UInt8]) {
         guard let peripheral = glassPeripheral,
               let writeChar = writeCharacteristic,
               peripheral.state == .connected else {
-            print("[GlassBLE] Henüz bağlı değil, komut kuyruğa alındı: \(command)")
+            log("Henüz bağlı değil, komut kuyruğa alındı: \(command)")
             pendingCommand = (command, payload)
             return
         }
@@ -150,7 +144,7 @@ final class GlassBLEController: NSObject {
         let packets = packetBuilder.buildPackets(command: command, payload: payload)
         for packet in packets {
             let data = Data(packet)
-            print("[GlassBLE] Gönderiliyor -> \(data.map { String(format: "%02X", $0) }.joined(separator: " "))")
+            log("Gönderiliyor -> \(data.map { String(format: "%02X", $0) }.joined(separator: " "))")
             let writeType: CBCharacteristicWriteType = writeChar.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
             peripheral.writeValue(data, for: writeChar, type: writeType)
         }
@@ -163,19 +157,19 @@ extension GlassBLEController: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         switch central.state {
         case .poweredOn:
-            print("[GlassBLE] Bluetooth hazır, tarama başlatılıyor.")
+            log("Bluetooth hazır, tarama başlatılıyor.")
             startScanning()
         case .poweredOff:
-            print("[GlassBLE] Bluetooth kapalı. Lütfen açın.")
+            log("Bluetooth kapalı. Lütfen açın.")
         case .unauthorized:
-            print("[GlassBLE] Bluetooth izni verilmemiş. Info.plist ve Ayarlar'ı kontrol edin.")
+            log("Bluetooth izni verilmemiş.")
         default:
-            print("[GlassBLE] Bluetooth state: \(central.state.rawValue)")
+            log("Bluetooth state: \(central.state.rawValue)")
         }
     }
 
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
-        print("[GlassBLE] Cihaz bulundu: \(peripheral.name ?? "isimsiz") RSSI=\(RSSI)")
+        log("Cihaz bulundu: \(peripheral.name ?? "isimsiz") RSSI=\(RSSI)")
         centralManager.stopScan()
         glassPeripheral = peripheral
         peripheral.delegate = self
@@ -183,16 +177,18 @@ extension GlassBLEController: CBCentralManagerDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        print("[GlassBLE] Bağlandı: \(peripheral.name ?? "isimsiz"). Servisler keşfediliyor...")
+        log("Bağlandı: \(peripheral.name ?? "isimsiz"). Servisler keşfediliyor...")
+        isConnected = true
         peripheral.discoverServices([GlassProtocol.serviceUUID])
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
-        print("[GlassBLE] Bağlantı başarısız: \(error?.localizedDescription ?? "bilinmeyen hata")")
+        log("Bağlantı başarısız: \(error?.localizedDescription ?? "bilinmeyen hata")")
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
-        print("[GlassBLE] Bağlantı koptu: \(error?.localizedDescription ?? "normal kapama")")
+        log("Bağlantı koptu: \(error?.localizedDescription ?? "normal kapama")")
+        isConnected = false
         glassPeripheral = nil
         writeCharacteristic = nil
         notifyCharacteristic = nil
@@ -206,7 +202,7 @@ extension GlassBLEController: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard let services = peripheral.services else { return }
         for service in services where service.uuid == GlassProtocol.serviceUUID {
-            print("[GlassBLE] Servis bulundu, karakteristikler keşfediliyor...")
+            log("Servis bulundu, karakteristikler keşfediliyor...")
             peripheral.discoverCharacteristics(
                 [GlassProtocol.writeCharacteristicUUID, GlassProtocol.notifyCharacteristicUUID],
                 for: service
@@ -219,15 +215,14 @@ extension GlassBLEController: CBPeripheralDelegate {
         for characteristic in characteristics {
             if characteristic.uuid == GlassProtocol.writeCharacteristicUUID {
                 writeCharacteristic = characteristic
-                print("[GlassBLE] Write karakteristiği bulundu.")
+                log("Write karakteristiği bulundu.")
             } else if characteristic.uuid == GlassProtocol.notifyCharacteristicUUID {
                 notifyCharacteristic = characteristic
                 peripheral.setNotifyValue(true, for: characteristic)
-                print("[GlassBLE] Notify karakteristiği bulundu, dinleme açıldı.")
+                log("Notify karakteristiği bulundu, dinleme açıldı.")
             }
         }
 
-        // Her iki karakteristik de hazırsa ve bekleyen bir komut varsa şimdi gönder
         if writeCharacteristic != nil, notifyCharacteristic != nil, let pending = pendingCommand {
             pendingCommand = nil
             send(command: pending.0, payload: pending.1)
@@ -237,9 +232,8 @@ extension GlassBLEController: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         guard characteristic.uuid == GlassProtocol.notifyCharacteristicUUID, let data = characteristic.value else { return }
         let hex = data.map { String(format: "%02X", $0) }.joined(separator: " ")
-        print("[GlassBLE] Bildirim alındı <- \(hex)")
+        log("Bildirim alındı <- \(hex)")
 
-        // Ham header'ı ayrıştırmayı dene (5 byte varsa)
         if data.count >= 5 {
             let bytes = [UInt8](data)
             let seq = bytes[0]
@@ -247,13 +241,13 @@ extension GlassBLEController: CBPeripheralDelegate {
             let commandType = bytes[2]
             let fragInfo = bytes[3]
             let length = bytes[4]
-            print("[GlassBLE]   seq=\(seq) command=\(command) type=\(commandType) fragInfo=\(fragInfo) len=\(length)")
+            log("  seq=\(seq) command=\(command) type=\(commandType) fragInfo=\(fragInfo) len=\(length)")
         }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
         if let error = error {
-            print("[GlassBLE] Yazma hatası: \(error.localizedDescription)")
+            log("Yazma hatası: \(error.localizedDescription)")
         }
     }
 }
