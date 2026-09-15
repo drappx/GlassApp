@@ -2,49 +2,53 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var controller = GlassBLEController()
+    @State private var showDevLog = false
 
     var body: some View {
-        VStack(spacing: 10) {
-            Text(controller.isConnected ? "Bağlı ✅" : "Bağlı değil ❌")
-                .font(.headline)
+        ZStack(alignment: .topTrailing) {
+            TabView {
+                DashboardView(controller: controller)
+                    .tabItem { Label("Ana Sayfa", systemImage: "house.fill") }
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack {
-                    Button("Bağlan") { controller.startScanning() }
-                    Button("Foto Çek") { controller.takePhoto() }
-                    Button("Video Başlat") { controller.startVideoRecording() }
-                    Button("Ses Başlat") { controller.startAudioRecording() }
-                    Button("Medya Sayısı") { controller.queryMediaCount() }
-                    Button("Dosya Yön. Başlat") { controller.startFileManager() }
-                    Button("Kamerayı Kapat") { controller.turnOffCameraSubsystem() }
-                    Button("Wi-Fi Adresi Sorgula") { controller.queryWifiDirectAddress() }
-                    Button("Wi-Fi Ağı Aç") { controller.enableWifiHotspot() }
-                }
-                .buttonStyle(.bordered)
+                CameraView(controller: controller)
+                    .tabItem { Label("Kamera", systemImage: "camera.fill") }
+
+                MediaView(controller: controller)
+                    .tabItem { Label("Medya", systemImage: "photo.on.rectangle") }
+
+                AIChatView()
+                    .tabItem { Label("AI", systemImage: "sparkles") }
+            }
+            .tint(Theme.accent)
+            .onAppear {
+                UITabBar.appearance().backgroundColor = UIColor(Theme.card)
             }
 
-            Divider()
-
-            ScrollView {
-                ScrollViewReader { proxy in
-                    LazyVStack(alignment: .leading, spacing: 2) {
-                        ForEach(Array(controller.logLines.enumerated()), id: \.offset) { index, line in
-                            Text(line)
-                                .font(.system(size: 11, design: .monospaced))
-                                .id(index)
-                        }
-                    }
-                    .onChange(of: controller.logLines.count) { _ in
-                        if let last = controller.logLines.indices.last {
-                            proxy.scrollTo(last, anchor: .bottom)
-                        }
-                    }
-                }
+            Button {
+                showDevLog = true
+            } label: {
+                Image(systemName: "ladybug.fill")
+                    .foregroundColor(Theme.textSecondary)
+                    .padding(10)
             }
-            .frame(maxHeight: .infinity)
-            .padding(.horizontal, 4)
         }
-        .padding()
+        .sheet(isPresented: $showDevLog) {
+            NavigationView {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(Array(controller.logLines.enumerated()), id: \.offset) { _, line in
+                            Text(line)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundColor(Theme.textPrimary)
+                        }
+                    }
+                    .padding()
+                }
+                .background(Theme.background.ignoresSafeArea())
+                .navigationTitle("Geliştirici Log")
+                .navigationBarItems(trailing: Button("Kapat") { showDevLog = false })
+            }
+        }
     }
 }
 
