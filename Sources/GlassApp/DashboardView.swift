@@ -27,6 +27,14 @@ struct DashboardView: View {
                     }
                 }
 
+                CardView {
+                    Button("El Sıkışmayı Elle Gönder") {
+                        controller.sendDeviceInfoHandshake()
+                    }
+                    .buttonStyle(.bordered)
+                    .frame(maxWidth: .infinity)
+                }
+
                 HStack(spacing: 16) {
                     CardView {
                         VStack(spacing: 8) {

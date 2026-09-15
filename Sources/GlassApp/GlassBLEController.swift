@@ -123,6 +123,7 @@ final class GlassBLEController: NSObject, ObservableObject {
 
     private var recordingState: RecordingState = .idle
     private var storageCheckWorkItem: DispatchWorkItem?
+    private var didSendHandshake = false
 
     override init() {
         super.init()
@@ -182,6 +183,24 @@ final class GlassBLEController: NSObject, ObservableObject {
 
     func queryWifiDirectAddress() {
         send(command: .glassWifiDirectAddress, payload: [])
+    }
+
+    /// InternalConnector.kt'de bağlantı kurulur kurulmaz otomatik gönderilen
+    /// kapsamlı "tanışma" isteği — glassInfoToRequest dizisindeki tüm bilgi tiplerini sorar.
+    /// Gözlüğün bildirim göndermeye başlaması için gerekli olabilir.
+    func sendDeviceInfoHandshake() {
+        let glassInfoToRequest: [Int8] = [
+            1, 2, 5, 6, 9, 10, 13, 14, 22, 28, -2, 38,
+            -128, -127, -124, -123, -122, -117, -115, -114, -119, -113,
+            -126, -125, -106, -104, -101, -102, -109, -97, -100, -118, -93, -91, -2
+        ]
+        var payload: [UInt8] = []
+        for infoByte in glassInfoToRequest {
+            payload.append(UInt8(bitPattern: infoByte))
+            payload.append(0x00)
+        }
+        log("El sıkışma (device info handshake) gönderiliyor — \(glassInfoToRequest.count) bilgi tipi...")
+        send(command: .commandDeviceInfo, payload: payload)
     }
 
     func queryStorageInfo() {
@@ -364,6 +383,7 @@ extension GlassBLEController: CBCentralManagerDelegate {
         writeCharacteristic = nil
         notifyCharacteristic = nil
         packetBuilder.reset()
+        didSendHandshake = false
     }
 }
 
@@ -414,6 +434,12 @@ extension GlassBLEController: CBPeripheralDelegate {
             }
         } else {
             log("Notify aboneliği ONAYLANDI ✅")
+            if !didSendHandshake {
+                didSendHandshake = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    self?.sendDeviceInfoHandshake()
+                }
+            }
         }
     }
 
