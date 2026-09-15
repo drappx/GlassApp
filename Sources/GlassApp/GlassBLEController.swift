@@ -185,6 +185,14 @@ final class GlassBLEController: NSObject, ObservableObject {
         send(command: .glassWifiDirectAddress, payload: [])
     }
 
+    /// InternalConnector.kt'de bağlantı kurulmadan ÖNCE, "preConnectedOperation" olarak
+    /// ayrıca çalışan MaxPacketSizeOperation — INFO_MAX_PACKET_SIZE (-1) sorgusu.
+    /// Belki gözlük bu pazarlık yapılmadan hiçbir bildirim göndermiyor.
+    func queryMaxPacketSize() {
+        log("Max paket boyutu sorgulanıyor (INFO_MAX_PACKET_SIZE)...")
+        send(command: .commandDeviceInfo, payload: [0xFF, 0x00]) // -1 bitPattern = 0xFF
+    }
+
     /// InternalConnector.kt'de bağlantı kurulur kurulmaz otomatik gönderilen
     /// kapsamlı "tanışma" isteği — glassInfoToRequest dizisindeki tüm bilgi tiplerini sorar.
     /// Gözlüğün bildirim göndermeye başlaması için gerekli olabilir.
